@@ -20,7 +20,7 @@ FindKernelModule(
 	NTSTATUS Status;
 	if ((Status = NtQuerySystemInformation(SystemModuleInformation, nullptr, 0, &Size)) != STATUS_INFO_LENGTH_MISMATCH)
 		return Status;
-
+	
 	const PRTL_PROCESS_MODULES Modules = static_cast<PRTL_PROCESS_MODULES>(RtlAllocateHeap(RtlProcessHeap(), HEAP_ZERO_MEMORY, 2 * static_cast<SIZE_T>(Size)));
 	Status = NtQuerySystemInformation(SystemModuleInformation,
 										Modules,
@@ -162,16 +162,21 @@ FindCiOptions(
 		if (hs.flags & F_ERROR)
 			break;
 
-		// TODO: this should really match arbitrary r32 immediates.
 		UCHAR PrefixSkip = ((hs.flags & F_PREFIX_ANY) != 0) ? 1 : 0; // Expected to only ever be F_PREFIX_REX
 		UCHAR ExpectedLength = 6 + PrefixSkip;
 
 		if (hs.len == ExpectedLength &&
-			(*reinterpret_cast<PUSHORT>(CipInitialize + i + PrefixSkip) == 0x0d89) ||	// mov g_CiOptions, ecx
-			(*reinterpret_cast<PUSHORT>(CipInitialize + i + PrefixSkip) == 0x2d89))		// mov g_CiOptions, r13d
+			CipInitialize[i + PrefixSkip] == 0x89) // mov g_CiOptions, r32
 		{
-			Relative = *reinterpret_cast<PLONG>(CipInitialize + i + PrefixSkip + 2);
-			break;
+			UCHAR ModRM = CipInitialize[i + PrefixSkip + 1];
+			UCHAR Mod = (ModRM >> 6) & 0x3;
+			UCHAR Rm = ModRM & 0x7;
+
+			if (Mod == 0 && Rm == 5) // mov [rip+disp32], r32 // mod = 0, R/M = 101
+			{
+				Relative = *reinterpret_cast<PLONG>(CipInitialize + i + PrefixSkip + 2);
+				break;
+			}
 		}
 
 		i += hs.len;
@@ -256,7 +261,7 @@ FindCiOptionsVariable(
 			Status = STATUS_NOT_FOUND;
 		}
 	}
-
+	
 Exit:
 	NtUnmapViewOfSection(NtCurrentProcess, MappedBase);
 	return Status;
@@ -418,33 +423,7 @@ WriteToCiOptions(
 		*OldCiOptionsValue = OldCiOptions;
 	}
 
-	RtlZeroMemory(&BackdoorData, sizeof(BackdoorData));
-
 	return STATUS_SUCCESS;
-}
-
-NTSTATUS
-CleanDseTraces()
-{
-	Printf(L"Attempting to remove DSE traces...\n");
-
-	// Remove the backdoor NVRAM variable if present
-	UNICODE_STRING VariableName = RTL_CONSTANT_STRING(EFIGUARD_BACKDOOR_VARIABLE_NAME);
-	NTSTATUS Status = NtSetSystemEnvironmentValueEx(
-		&VariableName,
-		EFIGUARD_BACKDOOR_VARIABLE_GUID,
-		nullptr,
-		0,
-		EFIGUARD_BACKDOOR_VARIABLE_ATTRIBUTES
-	);
-
-	if (!NT_SUCCESS(Status)) {
-		Printf(L"Failed to delete NVRAM variable (status: 0x%08lX).\n", Status);
-	}
-
-	// Add additional cleaning steps here if needed (e.g., zero memory, remove logs, etc.)
-
-	return Status;
 }
 
 NTSTATUS
@@ -466,19 +445,12 @@ AdjustCiOptions(
 		return Status;
 	}
 
-	Printf(L"Target variable: %ls at 0x%p.\n", (NtCurrentPeb()->OSBuildNumber >= 9200 ? L"CI!g_CiOptions" : L"nt!g_CiEnabled"), CiOptionsAddress);
+	Printf(L"%ls at 0x%p.\n", (NtCurrentPeb()->OSBuildNumber >= 9200 ? L"CI!g_CiOptions" : L"nt!g_CiEnabled"), CiOptionsAddress);
 
 	// Enable/disable CI
 	Status = WriteToCiOptions(CiOptionsAddress,
 							CiOptionsValue,
 							OldCiOptionsValue,
 							ReadOnly);
-
-	if (!NT_SUCCESS(Status)) {
-		Printf(L"Operation failed (status: 0x%08lX).\n", Status);
-	}
-
-	CleanDseTraces();
-
 	return Status;
 }
