@@ -1,16 +1,7 @@
 name: Build
 
 on:
-  schedule:
-    # At the end of every day
-    - cron: '0 0 * * *'
-  push:
-    branches: [ "my", "test" ]
-  pull_request:
-    branches: [ "my", "test" ]
-    types: [opened, synchronize, reopened]
-  release:
-    types: [created]
+  workflow_dispatch:
 
 jobs:
   build:
